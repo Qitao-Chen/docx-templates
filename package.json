@@ -1,6 +1,6 @@
 {
-  "name": "docx-templates",
-  "version": "4.15.0",
+  "name": "@qitao-chen/docx-templates",
+  "version": "4.16.0-qitao.1",
   "description": "Template-based docx report creation",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -14,17 +14,17 @@
     "report",
     "template"
   ],
-  "homepage": "https://github.com/guigrpa/docx-templates#readme",
+  "homepage": "https://github.com/Qitao-Chen/docx-templates#readme",
   "bugs": {
-    "url": "https://github.com/guigrpa/docx-templates/issues"
+    "url": "https://github.com/Qitao-Chen/docx-templates/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/guigrpa/docx-templates.git"
+    "url": "git+https://github.com/Qitao-Chen/docx-templates.git"
   },
   "scripts": {
-    "prepare": "yarn compile",
-    "compile": "rimraf ./lib && tsc && yarn rollup",
+    "prepare": "npm run compile",
+    "compile": "rimraf ./lib && tsc && npm run rollup",
     "rollup": "rollup -c",
     "jest": "jest --watch --coverage",
     "test": "yarn lint && yarn testCovFull",
@@ -96,5 +96,13 @@
       "!**/__tests__/**",
       "!**/__mocks__/**"
     ]
-  }
+  },
+  "files": [
+    "lib",
+    "!lib/__tests__",
+    "README.md",
+    "FORK.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ]
 }

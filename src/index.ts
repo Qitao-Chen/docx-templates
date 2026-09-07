@@ -1,5 +1,10 @@
 import createReport from './main';
-export { listCommands, getMetadata } from './main';
+export { listCommands, getMetadata, validateTemplate } from './main';
+export type {
+  ValidationResult,
+  TemplateDiagnostic,
+  TemplateLocation,
+} from './validation';
 export * from './errors';
 import type { QueryResolver } from './types';
 export { createReport, QueryResolver };

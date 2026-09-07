@@ -25,6 +25,7 @@ import { addChild, newNonTextNode } from './reportUtils';
 import JSZip from 'jszip';
 import { TemplateParseError } from './errors';
 import { logger } from './debug';
+import { TemplateValidator, ValidationResult } from './validation';
 
 const DEFAULT_CMD_DELIMITER = '+++' as const;
 const DEFAULT_LITERAL_XML_DELIMITER = '||' as const;
@@ -385,6 +386,55 @@ export async function listCommands(
   }
 
   return commands;
+}
+
+/** Inspect block structure without evaluating template JavaScript. */
+export async function validateTemplate(
+  template: ArrayBuffer,
+  delimiter?: string | [string, string]
+): Promise<ValidationResult> {
+  const options: CreateReportOptions = {
+    cmdDelimiter: getCmdDelimiter(delimiter),
+    literalXmlDelimiter: DEFAULT_LITERAL_XML_DELIMITER,
+    processLineBreaks: true,
+    noSandbox: false,
+    additionalJsContext: {},
+    failFast: false,
+    rejectNullish: false,
+    errorHandler: null,
+    fixSmartQuotes: false,
+    processLineBreaksAsNewText: false,
+    indentXml: true,
+    preserveSpace: true,
+    compressionLevel: 1,
+  };
+  if (options.cmdDelimiter.some(value => !value.length)) {
+    throw new Error('Command delimiters must not be empty');
+  }
+  const { jsTemplate, mainDocument, zip } = await parseTemplate(template);
+  const parts: [Node, string][] = [
+    [jsTemplate, `${TEMPLATE_PATH}/${mainDocument}`],
+    ...(await prepSecondaryXMLs(zip, mainDocument, options)),
+  ];
+  const diagnostics: ValidationResult['diagnostics'] = [];
+  for (const [tree, part] of parts) {
+    const prepped = preprocessTemplate(tree, options.cmdDelimiter, true);
+    const validator = new TemplateValidator(prepped, part, diagnostics);
+    const ctx = newContext(options);
+    await walkTemplate(
+      undefined,
+      prepped,
+      ctx,
+      async (_data, node, context) => {
+        const command = context.cmd;
+        context.cmd = '';
+        validator.command(command, node, context);
+        return undefined;
+      }
+    );
+    validator.finish(ctx);
+  }
+  return { valid: diagnostics.length === 0, diagnostics };
 }
 
 /**

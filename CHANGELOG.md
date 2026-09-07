@@ -1,3 +1,19 @@
+# Fork changelog
+
+## 4.16.0-qitao.1
+
+- Add `validateTemplate` for static block and alias diagnostics without running
+  template JavaScript.
+- Report document part, paragraph, and table/row/cell locations where available.
+- Cover split Word runs, custom delimiters, aliases, malformed nesting, and
+  independent header/body scopes with regression tests.
+- Distribute compiled packages through this fork's GitHub releases and make
+  package compilation callable through npm without a global Yarn installation.
+
+Based on upstream commit `54c2e80` (package version 4.15.0).
+
+---
+
 ## 4.15.0 (2025-12-03)
 * [#432](https://github.com/guigrpa/docx-templates/pull/432): add `indentXml`, `preserveSpace` and `compressionLevel` options to let users trade readability for smaller file size when generating reports.
 * [#426](https://github.com/guigrpa/docx-templates/pull/426): allow `IMAGE` commands to emit empty Alt Text values instead of forcing the placeholder `"desc"`.

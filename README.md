@@ -1,3 +1,7 @@
+> **Qitao-Chen maintained fork.** Adds static template validation with document locations.
+> See [FORK.md](FORK.md) for installation, API details, and maintenance policy.
+> Original project: [guigrpa/docx-templates](https://github.com/guigrpa/docx-templates).
+
 # Docx-templates [![Coverage Status](https://coveralls.io/repos/github/guigrpa/docx-templates/badge.svg?branch=master)](https://coveralls.io/github/guigrpa/docx-templates?branch=master) [![npm version](https://img.shields.io/npm/v/docx-templates.svg)](https://www.npmjs.com/package/docx-templates)
 
 Template-based docx report creation for both Node and the browser. ([See the blog post](http://guigrpa.github.io/2017/01/01/word-docs-the-relay-way/)).
