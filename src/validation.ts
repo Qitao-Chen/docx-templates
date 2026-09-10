@@ -1,3 +1,4 @@
+import type { DataSchema } from './schema';
 import type { Context, Node } from './types';
 import { getCommand, splitCommand } from './processTemplate';
 
@@ -7,6 +8,9 @@ export interface ValidationOptions {
   data?: unknown;
   /** Maximum expanded loop items per document part (default 10000). */
   maxLoopItems?: number;
+  schema?: DataSchema;
+  /** Schema-node check budget, default 10000. */
+  maxSchemaChecks?: number;
 }
 
 export interface TemplateLocation {
@@ -22,6 +26,8 @@ export interface TemplateLocation {
 
 export interface TemplateDiagnostic {
   code:
+    | 'SCHEMA_VIOLATION'
+    | 'UNCHECKED_SCHEMA'
     | 'INVALID_COMMAND'
     | 'UNEXPECTED_END'
     | 'UNCLOSED_BLOCK'
@@ -35,6 +41,7 @@ export interface TemplateDiagnostic {
   /** Absent on older diagnostics means error. */
   severity?: 'error' | 'warning';
   excerpt?: string;
+  source?: 'schema';
   dataPath?: string;
   iterations?: { variable: string; index: number }[];
 }
@@ -51,15 +58,25 @@ type Scope = {
   unavailable?: string;
 };
 
+export interface ValidationChecks {
+  structure: 'valid' | 'invalid';
+  data: 'not-requested' | 'valid' | 'invalid' | 'incomplete';
+  schema: 'not-requested' | 'valid' | 'invalid' | 'incomplete';
+  coverage: 'not-requested' | 'complete' | 'partial';
+}
+
 export interface ValidationResult {
-  /** Structural validity only; expressions are never evaluated. */
+  /** True when requested checks find no errors; inspect checks for incompleteness. */
   valid: boolean;
   diagnostics: TemplateDiagnostic[];
   /** Present when data checks were requested. Skipped checks may hide errors. */
   coverage?: ValidationCoverage;
+  schemaCoverage?: ValidationCoverage;
+  checks?: ValidationChecks;
 }
 
 export class TemplateValidator {
+  readonly references: TemplateDiagnostic[] = [];
   readonly coverage: ValidationCoverage = { checked: 0, skipped: 0 };
   private scopes: Scope[] = [{ bindings: {}, iterations: [] }];
   private expandedItems = 0;
@@ -206,6 +223,16 @@ export class TemplateValidator {
       path = binding.path + expression.slice(root.length);
       value = binding.value;
     }
+    if (this.options.schema)
+      this.references.push({
+        code: 'SCHEMA_VIOLATION',
+        message: '',
+        command: raw,
+        location: this.locations.get(node) || { part: this.part },
+        dataPath: path,
+        iterations: scope.iterations,
+        excerpt: this.excerpt(node, raw),
+      });
     for (const segment of segments) {
       const descriptor =
         value != null &&
@@ -394,13 +421,22 @@ export class TemplateValidator {
 
 /** Plain text suitable for CLI output and logs; includes no data values. */
 export function formatValidationReport(result: ValidationResult): string {
-  const summary = result.coverage
-    ? `Field checks: ${result.coverage.checked} checked, ${result.coverage.skipped} skipped.\n\n`
+  const statuses = result.checks
+    ? `Structure: ${result.checks.structure}; data: ${result.checks.data}; schema: ${result.checks.schema}; coverage: ${result.checks.coverage}.\n`
+    : '';
+  const summary =
+    statuses +
+    (result.coverage
+      ? `Field checks: ${result.coverage.checked} checked, ${result.coverage.skipped} skipped.\n\n`
+      : '');
+  const schemaSummary = result.schemaCoverage
+    ? `Schema checks: ${result.schemaCoverage.checked} checked, ${result.schemaCoverage.skipped} skipped.\n\n`
     : '';
   if (!result.diagnostics.length)
-    return summary + 'No issues found by the requested checks.';
+    return summary + schemaSummary + 'No issues found by the requested checks.';
   return (
     summary +
+    schemaSummary +
     result.diagnostics
       .map(issue => {
         const { part, paragraph, table, row, cell } = issue.location;

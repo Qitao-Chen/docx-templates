@@ -8,7 +8,7 @@ This MIT-licensed fork preserves the upstream history and attribution. Existing
 Install the built package from the GitHub release, retaining existing imports:
 
 ```sh
-npm install docx-templates@https://github.com/Qitao-Chen/docx-templates/releases/download/v4.16.0-qitao.3/qitao-chen-docx-templates-4.16.0-qitao.3.tgz
+npm install docx-templates@https://github.com/Qitao-Chen/docx-templates/releases/download/v4.16.0-qitao.4/qitao-chen-docx-templates-4.16.0-qitao.4.tgz
 ```
 
 The package name is `@qitao-chen/docx-templates`; the command above aliases it to
@@ -139,6 +139,85 @@ The GitHub test workflow runs tests, builds through the install lifecycle, packs
 and installs the compiled package, then checks its public validation/report and
 DOCX rendering APIs. It supports push, pull request and manual dispatch.
 
+## Optional schema and separate statuses (qitao.4)
+
+This is a **library-specific lightweight schema**, not JSON Schema. No external
+validator dependency is required. Unknown keywords and malformed rules reject the
+validation promise with a TypeError rather than being silently ignored.
+
+```ts
+import { validateTemplate, formatValidationReport, DataSchema } from 'docx-templates';
+
+const schema: DataSchema = {
+  type: 'object', required: true,
+  properties: {
+    customer: {
+      type: 'object', required: true,
+      properties: { name: { type: 'string', required: true, minLength: 1 } },
+    },
+    items: {
+      type: 'array', required: true, minItems: 1,
+      items: {
+        type: 'object',
+        properties: { price: { type: 'number', required: true, minimum: 0 } },
+      },
+    },
+    address: { type: 'string', nullable: true },
+  },
+};
+const result = await validateTemplate(template, { data, schema });
+console.log(result.checks);
+console.log(formatValidationReport(result));
+```
+
+Rules:
+
+- All nodes: `type`, optional boolean `required` and `nullable` (both default false).
+- `string`: optional `minLength`/`maxLength`, measured in Unicode code points.
+- `number`/`integer`: optional inclusive `minimum`/`maximum`; nonfinite numbers fail.
+- `boolean`: boolean values only, with no coercion.
+- `object`: optional `properties`, a map of property names to schemas. Extra keys are allowed.
+- `array`: optional `items`, `minItems` and `maxItems`. Without `items`, elements have no schema constraint.
+
+Required means present and not undefined. It does not mean nonempty: use
+`minLength: 1` or `minItems: 1` for that. Strings are not trimmed. A required
+nullable field may contain null but may not be missing. An optional object that
+is absent does not trigger its children's required rules. Sparse array elements
+are treated as undefined. Inherited data properties are absent. There is no
+coercion, defaulting, mutation, `$ref`, regex, union or format support.
+
+Schemas check all declared data, even fields not referenced by the template.
+`SCHEMA_VIOLATION` diagnostics carry `source: 'schema'` and the actual `dataPath`.
+Exact template references supply document locations and loop indexes. If only an
+ancestor path is referenced, its location is used (for example the FOR source);
+otherwise `location.part` is `data`, not a claimed DOCX location. Repeated
+references may produce multiple located diagnostics for the same violation.
+Input values are not copied into reports.
+
+`schema` requires an explicitly supplied `data` option. Plain data and schema
+objects are expected; do not pass proxies. Schema accessors/cycles are rejected;
+data accessors produce `UNCHECKED_SCHEMA` warnings without invoking getters.
+`maxSchemaChecks` is a positive safe integer, default 10000, bounding schema-node
+visits across the whole data object. Reaching the budget adds a warning for the
+unvisited remainder. Schema definitions are limited to 10000 nodes and depth 100.
+`schemaCoverage` counts schema-node visits separately from field checks; one
+skipped count can represent an unvisited subtree/remainder, not its unknown size.
+
+Every validation result now has an additive `checks` object:
+
+- `structure`: `valid` or `invalid` for supported structural checks.
+- `data`: `not-requested`, `valid`, `invalid`, or `incomplete`; combines field and schema checks.
+- `schema`: `not-requested`, `valid`, `invalid`, or `incomplete` for schema checks alone.
+- `coverage`: `not-requested`, `complete`, or `partial` for the requested data checks.
+
+`invalid` takes precedence over `incomplete`; `coverage: partial` still reveals
+skips alongside known errors. `complete` refers only to requested checks, not
+full JavaScript execution, renderer restrictions or document layout. The existing
+`valid` flag still means no reported errors; warnings alone do not make it false.
+Existing calls remain supported and the formatter still accepts older result
+objects without `checks`. Consumers comparing whole result objects should allow
+these additive fields.
+
 ## Development and maintenance
 
 ```sh
@@ -153,6 +232,6 @@ Keep `upstream` pointing to `https://github.com/guigrpa/docx-templates.git` and
 full test suite and build before tagging a release. Preserve the original MIT
 license and author attribution. Fork versions use the `-qitao.N` suffix.
 
-Future candidates: schema/type checks, annotated DOCX reports, additional Word
+Future candidates: annotated DOCX reports, additional Word
 editing regression fixtures, native rich text, reusable document fragments, and
 reusable compiled templates. These are not included in this release.

@@ -1,3 +1,4 @@
+import { assertDataSchema, validateSchemaData } from './schema';
 import { zipLoad, zipGetText, zipSetText, zipSave } from './zip';
 import { parseXml, buildXml } from './xml';
 import preprocessTemplate from './preprocessTemplate';
@@ -407,6 +408,31 @@ export async function validateTemplate(
       validationOptions.maxLoopItems < 1)
   )
     throw new Error('maxLoopItems must be a positive safe integer');
+  const hasData = Object.prototype.hasOwnProperty.call(
+    validationOptions,
+    'data'
+  );
+  const hasSchema = Object.prototype.hasOwnProperty.call(
+    validationOptions,
+    'schema'
+  );
+  if (hasSchema && !hasData)
+    throw new TypeError('schema requires an explicit data option');
+  if (hasSchema) assertDataSchema(validationOptions.schema!);
+  if (
+    validationOptions.maxSchemaChecks !== undefined &&
+    (!Number.isSafeInteger(validationOptions.maxSchemaChecks) ||
+      validationOptions.maxSchemaChecks < 1)
+  )
+    throw new TypeError('maxSchemaChecks must be a positive safe integer');
+  const schemaResult = hasSchema
+    ? validateSchemaData(
+        validationOptions.data,
+        validationOptions.schema!,
+        validationOptions.maxSchemaChecks ?? 10000
+      )
+    : undefined;
+  const references: ValidationResult['diagnostics'] = [];
   const coverage = { checked: 0, skipped: 0 };
   const delimiter = validationOptions.cmdDelimiter;
   const options: CreateReportOptions = {
@@ -454,13 +480,77 @@ export async function validateTemplate(
       }
     );
     validator.finish(ctx);
+    for (const reference of validator.references) references.push(reference);
     coverage.checked += validator.coverage.checked;
     coverage.skipped += validator.coverage.skipped;
   }
+  const structuralCodes = [
+    'INVALID_COMMAND',
+    'UNEXPECTED_END',
+    'UNCLOSED_BLOCK',
+    'UNCLOSED_COMMAND',
+  ];
+  const structureInvalid = diagnostics.some(issue =>
+    structuralCodes.includes(issue.code)
+  );
+  if (schemaResult) {
+    for (const issue of schemaResult.diagnostics) {
+      // Use exact references or the nearest referenced ancestor; never invent a location.
+      const candidates = references.filter(
+        ref =>
+          ref.dataPath === issue.dataPath ||
+          (ref.dataPath &&
+            (issue.dataPath?.startsWith(ref.dataPath + '.') ||
+              issue.dataPath?.startsWith(ref.dataPath + '[')))
+      );
+      const length = candidates.reduce(
+        (max, ref) => Math.max(max, ref.dataPath!.length),
+        -1
+      );
+      const matches = candidates.filter(ref => ref.dataPath!.length === length);
+      if (!matches.length) diagnostics.push(issue);
+      else
+        for (const ref of matches)
+          diagnostics.push({
+            ...ref,
+            ...issue,
+            location: ref.location,
+            command: ref.command,
+            excerpt: ref.excerpt,
+            iterations: ref.iterations,
+          });
+    }
+  }
+  const schemaInvalid = !!schemaResult?.diagnostics.some(
+    issue => issue.severity !== 'warning'
+  );
+  const dataInvalid = diagnostics.some(
+    issue =>
+      !structuralCodes.includes(issue.code) && issue.severity !== 'warning'
+  );
+  const partial =
+    coverage.skipped > 0 || (schemaResult?.coverage.skipped ?? 0) > 0;
   return {
-    ...(Object.prototype.hasOwnProperty.call(validationOptions, 'data')
-      ? { coverage }
-      : {}),
+    ...(hasData ? { coverage } : {}),
+    ...(schemaResult ? { schemaCoverage: schemaResult.coverage } : {}),
+    checks: {
+      structure: structureInvalid ? 'invalid' : 'valid',
+      data: !hasData
+        ? 'not-requested'
+        : dataInvalid
+        ? 'invalid'
+        : partial
+        ? 'incomplete'
+        : 'valid',
+      schema: !schemaResult
+        ? 'not-requested'
+        : schemaInvalid
+        ? 'invalid'
+        : schemaResult.coverage.skipped
+        ? 'incomplete'
+        : 'valid',
+      coverage: !hasData ? 'not-requested' : partial ? 'partial' : 'complete',
+    },
     valid: !diagnostics.some(issue => issue.severity !== 'warning'),
     diagnostics,
   };

@@ -1,5 +1,14 @@
 # Fork changelog
 
+## 4.16.0-qitao.4
+
+- Add optional lightweight data schema rules for required/nullable values, types,
+  string lengths, numeric ranges, array lengths and array element validation.
+- Link schema violations to known template references and loop data paths; retain
+  data-only locations for unreferenced fields.
+- Expose separate structure/data/schema/coverage statuses and schema visit counts.
+- Reject malformed schema definitions and bound traversal without executing accessors.
+
 ## 4.16.0-qitao.3
 
 - Check simple FOR sources item by item, including nested loops and alias fields.

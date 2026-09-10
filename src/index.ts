@@ -4,6 +4,7 @@ export type {
   ValidationResult,
   ValidationOptions,
   ValidationCoverage,
+  ValidationChecks,
   TemplateDiagnostic,
   TemplateLocation,
 } from './validation';
@@ -13,3 +14,5 @@ export { createReport, QueryResolver };
 export default createReport;
 
 export { formatValidationReport } from './validation';
+
+export type { DataSchema } from './schema';
