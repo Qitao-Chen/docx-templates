@@ -17,9 +17,11 @@ async function expectSameDocument(a: Uint8Array, b: Uint8Array) {
     Object.keys(right.files).sort()
   );
   for (const name of Object.keys(left.files)) {
-    expect(await left.files[name].async('uint8array')).toEqual(
-      await right.files[name].async('uint8array')
-    );
+    const [leftContent, rightContent] = await Promise.all([
+      left.files[name].async('nodebuffer'),
+      right.files[name].async('nodebuffer'),
+    ]);
+    expect(leftContent.equals(rightContent)).toBe(true);
   }
 }
 
