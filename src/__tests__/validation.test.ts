@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import JSZip from 'jszip';
-import { validateTemplate } from '../index';
+import { validateTemplate, formatValidationReport } from '../index';
 
 const paragraph = (text: string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`;
 async function document(body: string, header?: string) {
@@ -132,4 +132,163 @@ describe('validateTemplate', () => {
     ).rejects.toThrow('must not be empty');
     await expect(validateTemplate(Buffer.from('invalid'))).rejects.toThrow();
   });
+});
+
+describe('data preflight and reports', () => {
+  it('checks nested paths and array indexes, preserving falsy and null values', async () => {
+    const template = await document(
+      paragraph(
+        '+++customer.name++++++items[0].price++++++enabled++++++empty++++++nil+++'
+      )
+    );
+    expect(
+      await validateTemplate(template, {
+        data: {
+          customer: { name: '' },
+          items: [{ price: 0 }],
+          enabled: false,
+          empty: undefined,
+          nil: null,
+        },
+      })
+    ).toEqual({ valid: true, diagnostics: [] });
+  });
+
+  it('finds multiple missing paths with context and report positions', async () => {
+    const template = await document(
+      paragraph('Customer address: +++customer.address+++') +
+        '<w:tbl><w:tr><w:tc>' +
+        paragraph('+++items[1].price+++') +
+        '</w:tc></w:tr></w:tbl>'
+    );
+    const result = await validateTemplate(template, {
+      data: { customer: {}, items: [{ price: 1 }] },
+    });
+    expect(result.valid).toBe(false);
+    expect(result.diagnostics).toMatchObject([
+      {
+        code: 'MISSING_FIELD',
+        severity: 'error',
+        excerpt: 'Customer address: +++customer.address+++',
+      },
+      { code: 'MISSING_FIELD', location: { table: 1, row: 1, cell: 1 } },
+    ]);
+    expect(formatValidationReport(result)).toContain('table 1, row 1, cell 1');
+    expect(formatValidationReport(result)).toContain(
+      'Context: Customer address:'
+    );
+  });
+
+  it('does not execute getters or complex expressions', async () => {
+    const getter = jest.fn(() => 'secret');
+    const data = Object.defineProperty({}, 'secret', { get: getter });
+    const template = await document(
+      paragraph('+++secret++++++fetchSomething()+++')
+    );
+    const result = await validateTemplate(template, { data });
+    expect(result.valid).toBe(true);
+    expect(result.diagnostics.map(d => d.code)).toEqual([
+      'UNCHECKED_EXPRESSION',
+      'UNCHECKED_EXPRESSION',
+    ]);
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it('treats conditional and loop fields conservatively', async () => {
+    const template = await document(
+      paragraph(
+        '+++FOR item IN items++++++$item.name++++++END-FOR item++++++IF enabled++++++optional.value++++++END-IF+++'
+      )
+    );
+    const result = await validateTemplate(template, {
+      data: { items: [], enabled: false },
+    });
+    expect(result.valid).toBe(true);
+    expect(result.diagnostics).toHaveLength(2);
+    expect(result.diagnostics.every(d => d.severity === 'warning')).toBe(true);
+  });
+
+  it('warns after EXEC and keeps context independent across parts', async () => {
+    const template = await document(
+      paragraph('+++EXEC foo = 1++++++foo+++'),
+      paragraph('+++missing+++')
+    );
+    const result = await validateTemplate(template, { data: {} });
+    expect(result.diagnostics.map(d => d.code)).toEqual([
+      'UNCHECKED_EXPRESSION',
+      'UNCHECKED_EXPRESSION',
+      'MISSING_FIELD',
+    ]);
+  });
+
+  it('checks expanded aliases and custom delimiters using the options object', async () => {
+    const template = await document(
+      paragraph('{{ALIAS address INS customer.address}}{{*address}}')
+    );
+    const result = await validateTemplate(template, {
+      cmdDelimiter: ['{{', '}}'],
+      data: { customer: {} },
+    });
+    expect(result.diagnostics).toMatchObject([
+      { code: 'MISSING_FIELD', command: 'INS customer.address' },
+    ]);
+  });
+
+  it('does not check fields unless data is explicitly supplied', async () => {
+    const template = await document(paragraph('+++unknown+++'));
+    expect((await validateTemplate(template, {})).diagnostics).toEqual([]);
+    expect((await validateTemplate(template, { data: undefined })).valid).toBe(
+      false
+    );
+  });
+
+  it('handles null intermediates and excludes inherited properties', async () => {
+    const template = await document(
+      paragraph('+++customer.address++++++toString+++')
+    );
+    const result = await validateTemplate(template, {
+      data: { customer: null },
+    });
+    expect(result.diagnostics.map(d => d.code)).toEqual([
+      'MISSING_FIELD',
+      'MISSING_FIELD',
+    ]);
+  });
+
+  it('bounds long excerpts around the command and formats legacy diagnostics', async () => {
+    const template = await document(
+      paragraph('Before '.repeat(100) + '+++missing+++' + ' After'.repeat(100))
+    );
+    const result = await validateTemplate(template, { data: {} });
+    expect(result.diagnostics[0].excerpt!.length).toBeLessThanOrEqual(242);
+    expect(result.diagnostics[0].excerpt).toContain('missing');
+    expect(formatValidationReport({ valid: true, diagnostics: [] })).toContain(
+      'No issues found'
+    );
+    expect(
+      formatValidationReport({
+        valid: false,
+        diagnostics: [
+          {
+            code: 'UNCLOSED_COMMAND',
+            message: 'Unclosed',
+            command: 'INS x',
+            location: { part: 'word/document.xml' },
+          },
+        ],
+      })
+    ).toContain('[error]');
+  });
+});
+
+it('does not report missing fields after expressions that may change data', async () => {
+  const template = await document(
+    paragraph('+++initialize()++++++created.name+++')
+  );
+  const result = await validateTemplate(template, { data: {} });
+  expect(result.valid).toBe(true);
+  expect(result.diagnostics.map(d => d.code)).toEqual([
+    'UNCHECKED_EXPRESSION',
+    'UNCHECKED_EXPRESSION',
+  ]);
 });

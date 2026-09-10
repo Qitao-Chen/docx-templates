@@ -1,5 +1,14 @@
 # Fork changelog
 
+## 4.16.0-qitao.2
+
+- Add optional data checks for simple property paths and numeric array indexes.
+- Distinguish missing-field errors from unchecked-expression warnings.
+- Add bounded template context and `formatValidationReport` for readable diagnostics.
+- Preserve existing delimiter-based calls and rendering APIs.
+- Complex JavaScript, loop item validation, schema/type checks, and annotated
+  DOCX reports remain outside this release.
+
 ## 4.16.0-qitao.1
 
 - Add `validateTemplate` for static block and alias diagnostics without running

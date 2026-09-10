@@ -25,7 +25,11 @@ import { addChild, newNonTextNode } from './reportUtils';
 import JSZip from 'jszip';
 import { TemplateParseError } from './errors';
 import { logger } from './debug';
-import { TemplateValidator, ValidationResult } from './validation';
+import {
+  TemplateValidator,
+  ValidationResult,
+  ValidationOptions,
+} from './validation';
 
 const DEFAULT_CMD_DELIMITER = '+++' as const;
 const DEFAULT_LITERAL_XML_DELIMITER = '||' as const;
@@ -391,8 +395,13 @@ export async function listCommands(
 /** Inspect block structure without evaluating template JavaScript. */
 export async function validateTemplate(
   template: ArrayBuffer,
-  delimiter?: string | [string, string]
+  delimiterOrOptions?: string | [string, string] | ValidationOptions
 ): Promise<ValidationResult> {
+  const validationOptions: ValidationOptions =
+    typeof delimiterOrOptions === 'object' && !Array.isArray(delimiterOrOptions)
+      ? delimiterOrOptions || {}
+      : { cmdDelimiter: delimiterOrOptions };
+  const delimiter = validationOptions.cmdDelimiter;
   const options: CreateReportOptions = {
     cmdDelimiter: getCmdDelimiter(delimiter),
     literalXmlDelimiter: DEFAULT_LITERAL_XML_DELIMITER,
@@ -419,7 +428,12 @@ export async function validateTemplate(
   const diagnostics: ValidationResult['diagnostics'] = [];
   for (const [tree, part] of parts) {
     const prepped = preprocessTemplate(tree, options.cmdDelimiter, true);
-    const validator = new TemplateValidator(prepped, part, diagnostics);
+    const validator = new TemplateValidator(
+      prepped,
+      part,
+      diagnostics,
+      validationOptions
+    );
     const ctx = newContext(options);
     await walkTemplate(
       undefined,
@@ -434,7 +448,10 @@ export async function validateTemplate(
     );
     validator.finish(ctx);
   }
-  return { valid: diagnostics.length === 0, diagnostics };
+  return {
+    valid: !diagnostics.some(issue => issue.severity !== 'warning'),
+    diagnostics,
+  };
 }
 
 /**
