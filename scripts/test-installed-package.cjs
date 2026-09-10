@@ -1,0 +1,23 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const lib = require(path.resolve(process.argv[2]));
+(async () => {
+  const template = fs.readFileSync(path.join(__dirname, '../src/__tests__/fixtures/noQuerySimpleInserts.docx'));
+  const result = await lib.validateTemplate(template, {data: {a: 'one', b: 'two'}});
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.coverage, {checked: 2, skipped: 0});
+  assert.ok(lib.formatValidationReport(result).includes('2 checked'));
+  const output = await lib.createReport({template, data: {a: 'one', b: 'two'}});
+  assert.ok(output.byteLength > 0);
+  const JSZip = require('jszip');
+  const zip = await JSZip.loadAsync(output);
+  const xml = await zip.file('word/document.xml').async('string');
+  assert.ok(xml.includes('one') && xml.includes('two'));
+  zip.file('word/document.xml', '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>+++FOR item IN items++++++$item.price++++++END-FOR item+++</w:t></w:r></w:p></w:body></w:document>');
+  const loopTemplate = await zip.generateAsync({type: 'nodebuffer'});
+  const loopResult = await lib.validateTemplate(loopTemplate, {data: {items: [{price: 1}, {}]}});
+  assert.equal(loopResult.diagnostics[0].dataPath, 'items[1].price');
+  assert.deepEqual(loopResult.coverage, {checked: 3, skipped: 0});
+  console.log('Installed package validation, report and rendering passed');
+})().catch(error => { console.error(error); process.exitCode = 1; });

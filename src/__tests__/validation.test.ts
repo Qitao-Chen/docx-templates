@@ -151,7 +151,11 @@ describe('data preflight and reports', () => {
           nil: null,
         },
       })
-    ).toEqual({ valid: true, diagnostics: [] });
+    ).toEqual({
+      valid: true,
+      diagnostics: [],
+      coverage: { checked: 5, skipped: 0 },
+    });
   });
 
   it('finds multiple missing paths with context and report positions', async () => {
@@ -291,4 +295,130 @@ it('does not report missing fields after expressions that may change data', asyn
     'UNCHECKED_EXPRESSION',
     'UNCHECKED_EXPRESSION',
   ]);
+});
+
+describe('loop inspection and coverage', () => {
+  it('reports the actual missing item path and counts repeated checks', async () => {
+    const template = await document(
+      paragraph('+++FOR item IN items++++++$item.price++++++END-FOR item+++')
+    );
+    const result = await validateTemplate(template, {
+      data: { items: [{ price: 0 }, { price: 2 }, {}] },
+    });
+    expect(result.coverage).toEqual({ checked: 4, skipped: 0 });
+    expect(result.diagnostics).toMatchObject([
+      {
+        code: 'MISSING_FIELD',
+        dataPath: 'items[2].price',
+        iterations: [{ variable: 'item', index: 2 }],
+      },
+    ]);
+    expect(formatValidationReport(result)).toContain('item #3');
+    expect(formatValidationReport(result)).toContain('4 checked, 0 skipped');
+  });
+
+  it('resolves nested loops and restores outer bindings', async () => {
+    const template = await document(
+      paragraph(
+        '+++FOR group IN groups++++++FOR item IN $group.items++++++$item.name++++++END-FOR item++++++$group.title++++++END-FOR group++++++footer+++'
+      )
+    );
+    const result = await validateTemplate(template, {
+      data: {
+        groups: [
+          { title: 'A', items: [{ name: 'ok' }, {}] },
+          { title: 'B', items: [{ name: 'ok' }] },
+        ],
+        footer: '',
+      },
+    });
+    expect(result.coverage).toEqual({ checked: 9, skipped: 0 });
+    expect(result.diagnostics).toMatchObject([
+      {
+        dataPath: 'groups[0].items[1].name',
+        iterations: [
+          { variable: 'group', index: 0 },
+          { variable: 'item', index: 1 },
+        ],
+      },
+    ]);
+  });
+
+  it('restores a shadowed loop binding and checks aliases', async () => {
+    const template = await document(
+      paragraph(
+        '+++ALIAS label INS $item.name++++++FOR item IN items++++++FOR item IN $item.children++++++*label++++++END-FOR item++++++*label++++++END-FOR item+++'
+      )
+    );
+    const result = await validateTemplate(template, {
+      data: { items: [{ name: 'parent', children: [{}] }] },
+    });
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0].dataPath).toBe('items[0].children[0].name');
+  });
+
+  it('distinguishes invalid, missing, empty and dynamic sources', async () => {
+    const template = await document(
+      paragraph('+++FOR item IN items++++++$item.name++++++END-FOR item+++')
+    );
+    expect(
+      (await validateTemplate(template, { data: { items: 3 } })).diagnostics[0]
+        .code
+    ).toBe('INVALID_LOOP_DATA');
+    expect(
+      (await validateTemplate(template, { data: {} })).diagnostics[0].code
+    ).toBe('MISSING_FIELD');
+    const empty = await validateTemplate(template, { data: { items: [] } });
+    expect(empty.coverage).toEqual({ checked: 1, skipped: 1 });
+    expect(empty.diagnostics[0].message).toContain('Empty loop');
+    const dynamic = await validateTemplate(
+      await document(
+        paragraph(
+          '+++FOR item IN getItems()++++++$item.name++++++END-FOR item+++'
+        )
+      ),
+      { data: {} }
+    );
+    expect(dynamic.coverage).toEqual({ checked: 0, skipped: 2 });
+  });
+
+  it('does not invoke accessor array elements', async () => {
+    const getter = jest.fn(() => ({ name: 'secret' }));
+    const items: unknown[] = [];
+    Object.defineProperty(items, '0', { get: getter });
+    const template = await document(
+      paragraph('+++FOR item IN items++++++$item.name++++++END-FOR item+++')
+    );
+    const result = await validateTemplate(template, { data: { items } });
+    expect(result.coverage).toEqual({ checked: 1, skipped: 1 });
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it('limits expansion and reports skipped checks', async () => {
+    const template = await document(
+      paragraph('+++FOR item IN items++++++$item.name++++++END-FOR item+++')
+    );
+    const result = await validateTemplate(template, {
+      data: { items: [{ name: 'A' }, { name: 'B' }, {}] },
+      maxLoopItems: 1,
+    });
+    expect(result.coverage).toEqual({ checked: 2, skipped: 1 });
+    expect(result.diagnostics[0].message).toContain('limit');
+    await expect(
+      validateTemplate(template, { maxLoopItems: 0 })
+    ).rejects.toThrow('positive safe integer');
+  });
+
+  it('aggregates part coverage without leaking loop scope', async () => {
+    const template = await document(
+      paragraph('+++FOR item IN items++++++$item.name++++++END-FOR item+++'),
+      paragraph('+++title+++')
+    );
+    const result = await validateTemplate(template, {
+      data: { items: [{ name: '' }], title: '' },
+    });
+    expect(result.coverage).toEqual({ checked: 3, skipped: 0 });
+    expect(result.diagnostics).toEqual([]);
+    expect((await validateTemplate(template)).coverage).toBeUndefined();
+  });
 });

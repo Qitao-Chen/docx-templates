@@ -5,6 +5,8 @@ export interface ValidationOptions {
   cmdDelimiter?: string | [string, string];
   /** Opt in to checking simple property paths against plain data. */
   data?: unknown;
+  /** Maximum expanded loop items per document part (default 10000). */
+  maxLoopItems?: number;
 }
 
 export interface TemplateLocation {
@@ -24,6 +26,7 @@ export interface TemplateDiagnostic {
     | 'UNEXPECTED_END'
     | 'UNCLOSED_BLOCK'
     | 'UNCLOSED_COMMAND'
+    | 'INVALID_LOOP_DATA'
     | 'MISSING_FIELD'
     | 'UNCHECKED_EXPRESSION';
   message: string;
@@ -32,19 +35,43 @@ export interface TemplateDiagnostic {
   /** Absent on older diagnostics means error. */
   severity?: 'error' | 'warning';
   excerpt?: string;
+  dataPath?: string;
+  iterations?: { variable: string; index: number }[];
 }
+
+export interface ValidationCoverage {
+  /** Field-check attempts, including repeated loop instances. */
+  checked: number;
+  skipped: number;
+}
+
+type Scope = {
+  bindings: Record<string, { value: unknown; path: string }>;
+  iterations: { variable: string; index: number }[];
+  unavailable?: string;
+};
 
 export interface ValidationResult {
   /** Structural validity only; expressions are never evaluated. */
   valid: boolean;
   diagnostics: TemplateDiagnostic[];
+  /** Present when data checks were requested. Skipped checks may hide errors. */
+  coverage?: ValidationCoverage;
 }
 
 export class TemplateValidator {
+  readonly coverage: ValidationCoverage = { checked: 0, skipped: 0 };
+  private scopes: Scope[] = [{ bindings: {}, iterations: [] }];
+  private expandedItems = 0;
   private dynamicContext = false;
   private locations = new Map<Node, TemplateLocation>();
-  private blocks: { type: string; name: string; raw: string; node: Node }[] =
-    [];
+  private blocks: {
+    type: string;
+    name: string;
+    raw: string;
+    node: Node;
+    scopes: Scope[];
+  }[] = [];
 
   constructor(
     tree: Node,
@@ -88,11 +115,14 @@ export class TemplateValidator {
     message: string,
     command: string,
     node?: Node,
-    severity: 'error' | 'warning' = 'error'
+    severity: 'error' | 'warning' = 'error',
+    scope?: Scope,
+    dataPath?: string
   ) {
     this.diagnostics.push({
       code,
       severity,
+      ...(scope ? { iterations: scope.iterations, dataPath } : {}),
       excerpt: node ? this.excerpt(node, command) : undefined,
       message,
       command,
@@ -132,56 +162,78 @@ export class TemplateValidator {
     );
   }
 
-  private checkField(expression: string, raw: string, node: Node) {
-    const unchecked = (message: string) =>
-      this.add('UNCHECKED_EXPRESSION', message, raw, node, 'warning');
-    const isPath = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\d+\])*$/.test(
-      expression
-    );
+  private checkField(
+    expression: string,
+    raw: string,
+    node: Node,
+    scope: Scope
+  ): { value: unknown; path: string } | undefined {
+    const unchecked = (message: string) => {
+      this.coverage.skipped++;
+      this.add('UNCHECKED_EXPRESSION', message, raw, node, 'warning', scope);
+    };
+    const isPath =
+      /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[(?:0|[1-9]\d*)\])*$/.test(
+        expression
+      );
     if (!isPath) this.dynamicContext = true;
-    if (this.dynamicContext || this.blocks.length) {
+    if (
+      this.dynamicContext ||
+      scope.unavailable ||
+      this.blocks.some(block => block.type === 'IF')
+    ) {
       unchecked(
-        'Expression depends on dynamic JavaScript, a conditional, or a loop; not checked'
+        scope.unavailable ||
+          'Expression depends on dynamic JavaScript or a conditional; not checked'
       );
       return;
     }
-    // Deliberately accept only property paths. Never evaluate JS or invoke getters.
-    if (
-      !/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\d+\])*$/.test(expression) ||
-      /^(true|false|null|undefined|NaN|Infinity)$/.test(expression)
-    ) {
+    if (/^(true|false|null|undefined|NaN|Infinity)$/.test(expression)) {
       unchecked('Only simple property paths can be checked statically');
       return;
     }
     const segments = expression.replace(/\[(\d+)\]/g, '.$1').split('.');
+    const binding = Object.prototype.hasOwnProperty.call(
+      scope.bindings,
+      segments[0]
+    )
+      ? scope.bindings[segments[0]]
+      : undefined;
+    let path = expression;
     let value: unknown = this.options.data;
+    if (binding) {
+      const root = segments.shift()!;
+      path = binding.path + expression.slice(root.length);
+      value = binding.value;
+    }
     for (const segment of segments) {
-      if (
-        value == null ||
-        (typeof value !== 'object' && typeof value !== 'string')
-      ) {
+      const descriptor =
+        value != null &&
+        (typeof value === 'object' || typeof value === 'string')
+          ? Object.getOwnPropertyDescriptor(Object(value), segment)
+          : undefined;
+      if (!descriptor) {
+        this.coverage.checked++;
         this.add(
           'MISSING_FIELD',
-          `Cannot resolve field ${expression}`,
+          `Missing own field ${path}`,
           raw,
-          node
+          node,
+          'error',
+          scope,
+          path
         );
         return;
       }
-      const descriptor = Object.getOwnPropertyDescriptor(
-        Object(value),
-        segment
-      );
-      if (!descriptor) {
-        this.add('MISSING_FIELD', `Missing own field ${expression}`, raw, node);
-        return;
-      }
       if (!('value' in descriptor)) {
-        unchecked(`Field ${expression} uses an accessor; not checked`);
+        this.dynamicContext = true;
+        unchecked(`Field ${path} uses an accessor; not checked`);
         return;
       }
       value = descriptor.value;
     }
+    this.coverage.checked++;
+    return { value, path };
   }
 
   command(source: string, node: Node, ctx: Context) {
@@ -193,9 +245,11 @@ export class TemplateValidator {
       return;
     }
     const { cmdName: type, cmdRest: code } = splitCommand(raw);
+    let loopScopes: Scope[] | undefined;
     if (Object.prototype.hasOwnProperty.call(this.options, 'data')) {
       if (type === 'EXEC') {
         this.dynamicContext = true;
+        this.coverage.skipped += this.scopes.length;
         this.add(
           'UNCHECKED_EXPRESSION',
           'EXEC is not executed; subsequent fields cannot be checked reliably',
@@ -207,8 +261,78 @@ export class TemplateValidator {
         ['INS', 'IMAGE', 'LINK', 'HTML', 'IF', 'FOR'].includes(type || '')
       ) {
         const match = type === 'FOR' ? /^(\S+)\s+IN\s+(.+)/i.exec(code) : null;
-        if (type !== 'FOR' || match)
-          this.checkField(match ? match[2] : code, raw, node);
+        if (type === 'FOR' && match) loopScopes = [];
+        if (type !== 'FOR' || match) {
+          for (const scope of this.scopes) {
+            const resolved = this.checkField(
+              match ? match[2] : code,
+              raw,
+              node,
+              scope
+            );
+            if (loopScopes && match) {
+              if (!resolved || !Array.isArray(resolved.value)) {
+                if (resolved)
+                  this.add(
+                    'INVALID_LOOP_DATA',
+                    `FOR source ${resolved.path} must be an array`,
+                    raw,
+                    node,
+                    'error',
+                    scope,
+                    resolved.path
+                  );
+                loopScopes.push({
+                  ...scope,
+                  unavailable: 'Loop source could not be inspected',
+                });
+              } else if (!resolved.value.length) {
+                loopScopes.push({
+                  ...scope,
+                  unavailable: 'Empty loop has no items to inspect',
+                });
+              } else {
+                for (let index = 0; index < resolved.value.length; index++) {
+                  if (
+                    this.expandedItems >= (this.options.maxLoopItems ?? 10000)
+                  ) {
+                    loopScopes.push({
+                      ...scope,
+                      unavailable:
+                        'Loop item inspection limit reached; remaining items not checked',
+                    });
+                    break;
+                  }
+                  this.expandedItems++;
+                  const item = Object.getOwnPropertyDescriptor(
+                    resolved.value,
+                    String(index)
+                  );
+                  const path = `${resolved.path}[${index}]`;
+                  loopScopes.push({
+                    bindings: {
+                      ...scope.bindings,
+                      [`$${match[1]}`]: {
+                        value: item && 'value' in item ? item.value : undefined,
+                        path,
+                      },
+                    },
+                    iterations: [
+                      ...scope.iterations,
+                      { variable: match[1], index },
+                    ],
+                    ...(!item || !('value' in item)
+                      ? {
+                          unavailable:
+                            'Sparse or accessor loop item not checked',
+                        }
+                      : {}),
+                  });
+                }
+              }
+            }
+          }
+        }
       }
     }
     if (type === 'ALIAS') {
@@ -226,7 +350,9 @@ export class TemplateValidator {
         name: type === 'FOR' ? match![1] : '',
         raw,
         node,
+        scopes: this.scopes,
       });
+      if (loopScopes) this.scopes = loopScopes;
     } else if (type === 'END-FOR' || type === 'END-IF') {
       const block = this.blocks[this.blocks.length - 1];
       if (
@@ -241,6 +367,7 @@ export class TemplateValidator {
           node
         );
       } else {
+        this.scopes = block.scopes;
         this.blocks.pop();
       }
     }
@@ -267,26 +394,37 @@ export class TemplateValidator {
 
 /** Plain text suitable for CLI output and logs; includes no data values. */
 export function formatValidationReport(result: ValidationResult): string {
+  const summary = result.coverage
+    ? `Field checks: ${result.coverage.checked} checked, ${result.coverage.skipped} skipped.\n\n`
+    : '';
   if (!result.diagnostics.length)
-    return 'No issues found by the requested checks.';
-  return result.diagnostics
-    .map(issue => {
-      const { part, paragraph, table, row, cell } = issue.location;
-      const position = [
-        part,
-        paragraph && `paragraph ${paragraph}`,
-        table && `table ${table}`,
-        row && `row ${row}`,
-        cell && `cell ${cell}`,
-      ]
-        .filter(Boolean)
-        .join(', ');
-      return (
-        `[${issue.severity || 'error'}] ${issue.code}: ${
-          issue.message
-        }\n  ${position}\n  ${issue.command}` +
-        (issue.excerpt ? `\n  Context: ${issue.excerpt}` : '')
-      );
-    })
-    .join('\n\n');
+    return summary + 'No issues found by the requested checks.';
+  return (
+    summary +
+    result.diagnostics
+      .map(issue => {
+        const { part, paragraph, table, row, cell } = issue.location;
+        const position = [
+          part,
+          paragraph && `paragraph ${paragraph}`,
+          table && `table ${table}`,
+          row && `row ${row}`,
+          cell && `cell ${cell}`,
+        ]
+          .filter(Boolean)
+          .join(', ');
+        return (
+          `[${issue.severity || 'error'}] ${issue.code}: ${
+            issue.message
+          }\n  ${position}\n  ${issue.command}` +
+          (issue.iterations?.length
+            ? `\n  Iterations: ${issue.iterations
+                .map(item => `${item.variable} #${item.index + 1}`)
+                .join(', ')}`
+            : '') +
+          (issue.excerpt ? `\n  Context: ${issue.excerpt}` : '')
+        );
+      })
+      .join('\n\n')
+  );
 }

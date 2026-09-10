@@ -1,5 +1,13 @@
 # Fork changelog
 
+## 4.16.0-qitao.3
+
+- Check simple FOR sources item by item, including nested loops and alias fields.
+- Include actual data paths and loop indexes in diagnostics.
+- Report checked/skipped field-check attempts; bound loop expansion with maxLoopItems.
+- Reject non-array loop sources and explicitly warn about uninspectable loop bodies.
+- Add manually dispatchable GitHub CI with compiled-package installation and rendering verification.
+
 ## 4.16.0-qitao.2
 
 - Add optional data checks for simple property paths and numeric array indexes.

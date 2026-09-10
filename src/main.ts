@@ -401,6 +401,13 @@ export async function validateTemplate(
     typeof delimiterOrOptions === 'object' && !Array.isArray(delimiterOrOptions)
       ? delimiterOrOptions || {}
       : { cmdDelimiter: delimiterOrOptions };
+  if (
+    validationOptions.maxLoopItems !== undefined &&
+    (!Number.isSafeInteger(validationOptions.maxLoopItems) ||
+      validationOptions.maxLoopItems < 1)
+  )
+    throw new Error('maxLoopItems must be a positive safe integer');
+  const coverage = { checked: 0, skipped: 0 };
   const delimiter = validationOptions.cmdDelimiter;
   const options: CreateReportOptions = {
     cmdDelimiter: getCmdDelimiter(delimiter),
@@ -447,8 +454,13 @@ export async function validateTemplate(
       }
     );
     validator.finish(ctx);
+    coverage.checked += validator.coverage.checked;
+    coverage.skipped += validator.coverage.skipped;
   }
   return {
+    ...(Object.prototype.hasOwnProperty.call(validationOptions, 'data')
+      ? { coverage }
+      : {}),
     valid: !diagnostics.some(issue => issue.severity !== 'warning'),
     diagnostics,
   };

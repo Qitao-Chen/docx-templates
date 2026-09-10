@@ -3,6 +3,7 @@ export { listCommands, getMetadata, validateTemplate } from './main';
 export type {
   ValidationResult,
   ValidationOptions,
+  ValidationCoverage,
   TemplateDiagnostic,
   TemplateLocation,
 } from './validation';

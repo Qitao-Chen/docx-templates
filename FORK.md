@@ -8,7 +8,7 @@ This MIT-licensed fork preserves the upstream history and attribution. Existing
 Install the built package from the GitHub release, retaining existing imports:
 
 ```sh
-npm install docx-templates@https://github.com/Qitao-Chen/docx-templates/releases/download/v4.16.0-qitao.2/qitao-chen-docx-templates-4.16.0-qitao.2.tgz
+npm install docx-templates@https://github.com/Qitao-Chen/docx-templates/releases/download/v4.16.0-qitao.3/qitao-chen-docx-templates-4.16.0-qitao.3.tgz
 ```
 
 The package name is `@qitao-chen/docx-templates`; the command above aliases it to
@@ -79,10 +79,10 @@ a nullish intermediate value cannot resolve a deeper path. This checks existence
 not types, value suitability, or a JSON Schema. In particular, an intentionally
 absent top-level IF field will be reported missing when data checking is enabled.
 
-Complex expressions, constants, getters, conditional/loop body references, and
+Complex expressions, constants, getters, conditional body references, and
 fields after EXEC or other potentially mutating JavaScript produce
 `UNCHECKED_EXPRESSION` warnings instead of speculative missing-field errors.
-No template JavaScript is executed. Loop item data is not checked in this version.
+No template JavaScript is executed. Resolvable FOR sources are checked item by item as described below.
 Alias expansions and each document part use the same checks. A warning does not
 make `valid` false; callers requiring complete coverage should also inspect
 warnings. `valid: true` means only that the requested checks found no errors.
@@ -99,6 +99,45 @@ or a CLI. It neither produces HTML nor changes the DOCX. For example:
   INS customer.address
   Context: Address: {{INS customer.address}}
 ```
+
+## Loop checks and coverage (qitao.3)
+
+Simple FOR sources now support per-item checks, including nested loops and aliases.
+For example, `FOR item IN items` followed by `INS $item.price` can report
+`dataPath: "items[2].price"` and `iterations: [{ variable: "item", index: 2 }]`.
+Indexes in structured diagnostics are zero-based; the text report displays
+one-based item numbers. Document locations still refer to the template, not the
+expanded output rows. Loop bindings are restored after END-FOR.
+
+With `data` supplied, the result adds `coverage: { checked, skipped }`. These are
+field-check attempts, not unique tags: three loop items produce three checks for
+each field. Missing fields count as checked because their absence was determined.
+FOR source expressions and EXEC skips are included. A skipped body with no
+inspectable items contributes one placeholder attempt per expression; skipped
+counts are not estimates of an unknown number of runtime iterations. Without
+`data`, coverage is omitted for compatibility. `formatValidationReport` includes
+the counts even when there are no errors.
+
+Non-array resolved sources produce `INVALID_LOOP_DATA`. Empty, missing, dynamic,
+sparse or accessor-based sources/items leave body references unchecked with an
+explicit warning. Conditional bodies remain unchecked. Checks use the supplied
+data snapshot and never execute JavaScript; they do not simulate mutations across
+iterations or evaluate conditions. Supply plain data, inspect warnings, and do not
+treat `valid: true` as a guarantee of successful rendering.
+
+`maxLoopItems` limits total expanded items per document part (default 10000,
+positive safe integer). Remaining body checks become warnings on reaching the
+limit, rather than silently claiming complete coverage. For example:
+
+```ts
+const result = await validateTemplate(template, { data, maxLoopItems: 5000 });
+console.log(result.coverage); // { checked: ..., skipped: ... }
+console.log(formatValidationReport(result));
+```
+
+The GitHub test workflow runs tests, builds through the install lifecycle, packs
+and installs the compiled package, then checks its public validation/report and
+DOCX rendering APIs. It supports push, pull request and manual dispatch.
 
 ## Development and maintenance
 

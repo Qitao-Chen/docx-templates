@@ -7,6 +7,22 @@ import { Image, ImagePars } from '../types';
 import { setDebugLogSink } from '../debug';
 import JSZip from 'jszip';
 
+// ZIP timestamps can differ when equivalent reports are generated across seconds.
+async function expectSameDocument(a: Uint8Array, b: Uint8Array) {
+  const [left, right] = await Promise.all([
+    JSZip.loadAsync(a),
+    JSZip.loadAsync(b),
+  ]);
+  expect(Object.keys(left.files).sort()).toEqual(
+    Object.keys(right.files).sort()
+  );
+  for (const name of Object.keys(left.files)) {
+    expect(await left.files[name].async('uint8array')).toEqual(
+      await right.files[name].async('uint8array')
+    );
+  }
+}
+
 if (process.env.DEBUG) setDebugLogSink(console.log);
 
 it('001: Issue #61 Correctly renders an SVG image', async () => {
@@ -227,7 +243,7 @@ it('005: can inject PNG files using ArrayBuffers without errors (related to issu
   });
   expect(fromAB).toBeInstanceOf(Uint8Array);
   expect(fromB).toBeInstanceOf(Uint8Array);
-  expect(fromAB).toStrictEqual(fromB);
+  await expectSameDocument(fromAB, fromB);
 });
 
 it('006: can inject an image from the data instead of the additionalJsContext', async () => {
@@ -262,7 +278,7 @@ it('006: can inject an image from the data instead of the additionalJsContext', 
   });
   expect(reportA).toBeInstanceOf(Uint8Array);
   expect(reportB).toBeInstanceOf(Uint8Array);
-  expect(reportA).toStrictEqual(reportB);
+  await expectSameDocument(reportA, reportB);
 
   // Ensure only one 'media' element (the image data as a png file) is added to the final docx file.
   // Regression test for #218
